@@ -1,0 +1,1303 @@
+---
+title: "FINAL_PROJECT AMS597"
+subtitle: |
+  Instructor: Silvia Sharna  
+  Team Members:  
+    - Aishwarya Bhanage (116556145), aishwaryamahad.bhanage@stonybrook.edu  
+    - Rutika Kadam (116753960), rutikaavinash.kadam@stonybrook.edu  
+    - Sanjyot Amritkar (116483478), sanjyotsatish.amritkar@stonybrook.edu  
+    - Sakshi Shah (116727594), sakshijanak.shah@stonybrook.edu  
+    - Tamali Halder (116713494)
+output:
+  pdf_document: default
+  html_document: default
+always_allow_html: true
+---
+
+
+
+
+```{r}
+#Load required libraries
+library(tidyverse)
+library(ggplot2)
+library(DataExplorer)
+library(dplyr)
+library(janitor)
+library(naniar)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(ggthemes)
+library(ggmap)
+library(scales)
+library(gridExtra)
+library(ggpubr)
+library(corrplot)
+library(zoo)
+library(tidyr)
+library(cluster)
+library(factoextra)
+library(NbClust)
+library(dplyr)
+library(caret)
+library(pROC)
+library(randomForest)
+library(xgboost)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+library(reshape2)
+```
+```{r}
+rawdata <- read.csv("C:\\Users\\abhanage\\OneDrive - Stony Brook University\\2_Spring 2025 Sem 2\\AMS 597- Statistical Computing\\Project\\CrimeTrendData\\raw_data.csv")
+head(rawdata)
+```
+```{r}
+str(rawdata)
+```
+```{r}
+#Rename the columns
+rawdata <- rawdata %>% clean_names()
+colnames(rawdata)
+
+#Duplicate Data Check
+cat("\n","Duplicacy check: ", sum(duplicated(rawdata)))
+```
+```{r}
+#Check for null/missing values
+rawdata[rawdata == ""] <- NA  
+
+# Function to calculate missing values
+missing_summary <- data.frame(
+  Column_Name = names(rawdata),
+  Missing_Count = sapply(rawdata, function(x) sum(is.na(x))),
+  Missing_Percentage = sapply(rawdata, function(x) round(sum(is.na(x)) / length(x) * 100, 2))
+)
+
+overall_na_percent <- sum(is.na(rawdata)) / (nrow(rawdata) * ncol(rawdata)) * 100
+
+# Print missing value summary
+print(missing_summary)
+cat("Overall na percentage:", overall_na_percent)
+```
+```{r}
+# Identify columns with more than 50% missing values
+cols_to_drop <- missing_summary$Column_Name[missing_summary$Missing_Percentage > 50]
+
+# Drop those columns from rawdata
+rawdata <- rawdata[, !(names(rawdata) %in% cols_to_drop)]
+
+# Optional: Print the dropped columns
+cat("Dropped columns due to >50% missing data:\n")
+print(cols_to_drop)
+```
+```{r}
+#Droping mocodes column from data
+rawdata <- subset(rawdata, select = -c(mocodes))
+str(rawdata)
+```
+```{r}
+# Count how many missing values
+num_missing <- sum(is.na(rawdata$vict_sex))
+
+# Calculate half (or split evenly)
+half_missing <- floor(num_missing / 2)
+remaining <- num_missing - half_missing
+
+# Create a vector with half "F" and half "M"
+imputed_values <- c(rep("F", half_missing), rep("M", remaining))
+
+# Shuffle to randomly assign
+set.seed(123)  # For reproducibility
+imputed_values <- sample(imputed_values)
+
+# Assign to the missing positions
+rawdata$vict_sex[is.na(rawdata$vict_sex)] <- imputed_values
+```
+```{r}
+# Function to compute mode
+get_mode <- function(v) {
+  uniqv <- na.omit(unique(v))
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+# Impute missing values in vict_descent
+for (i in which(is.na(rawdata$vict_descent))) {
+  age_val <- rawdata$vict_age[i]
+  
+  # Find mode of vict_descent for this age group
+  descent_mode <- get_mode(rawdata$vict_descent[rawdata$vict_age == age_val])
+  
+  # If mode exists, fill it
+  if (!is.null(descent_mode) && length(descent_mode) > 0) {
+    rawdata$vict_descent[i] <- descent_mode
+  }
+}
+```
+```{r}
+rawdata <- na.omit(rawdata)
+```
+```{r}
+# Step 1: Clean strings
+rawdata$date_rptd <- str_squish(rawdata$date_rptd)
+rawdata$date_occ  <- str_squish(rawdata$date_occ)
+
+# Step 2: Parse mixed formats
+rawdata$date_rptd <- parse_date_time(rawdata$date_rptd, orders = c("mdY IMS p", "mdY HM", "mdY HMS", "mdY"))
+rawdata$date_occ  <- parse_date_time(rawdata$date_occ,  orders = c("mdY IMS p", "mdY HM", "mdY HMS", "mdY"))
+
+# Step 3: Overwrite original columns in MM/DD/YYYY format
+rawdata$date_rptd <- format(rawdata$date_rptd, "%m-%d-%Y")
+rawdata$date_occ  <- format(rawdata$date_occ, "%m-%d-%Y")
+
+# Convert both columns from string to proper Date format
+rawdata$date_rptd <- as.Date(rawdata$date_rptd, format = "%m-%d-%Y")
+rawdata$date_occ  <- as.Date(rawdata$date_occ,  format = "%m-%d-%Y")
+# Step 4: Sort by actual parsed date_occ
+#rawdata <- rawdata %>% arrange(date_occ_parsed)
+```
+
+```{r}
+#Find the number of unique values in each column
+unique_values <- sapply(rawdata, function(x) length(unique(x)))
+
+#Display the result
+print(unique_values)
+```
+```{r}
+#Separating the numeric and categoric features
+numeric_cols <- rawdata %>% select_if(is.numeric)
+categoric_cols <- rawdata %>% select_if(~!is.numeric(.))
+cat("We have ",ncol(categoric_cols)," categorical columns.","\n","\n")
+colnames(categoric_cols)
+cat("\n")
+cat("We have ",ncol(numeric_cols)," numerical columns.","\n","\n")
+colnames(numeric_cols)
+```
+```{r}
+categoric_col <- c("area_name","crm_cd_desc","vict_sex", "vict_descent", "premis_desc","status",       "status_desc", "location")
+
+#Print unique values for each categorical column
+for (col in categoric_col) {
+  unique_vals <- unique(rawdata[[col]])
+  num_unique <- length(unique_vals)
+  cat("Unique values in column", col,"are: ",num_unique, "\n")
+  cat("\n")
+}
+```
+```{r}
+#NO COLUMNS IN OUR DATA WHICH CAN HAVE OUTLIER
+# Calculate Q1, Q3, and IQR
+q1 <- quantile(rawdata$vict_age, 0.25, na.rm = TRUE)
+q3 <- quantile(rawdata$vict_age, 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+# Define lower and upper bounds
+lower_bound <- q1 - 1.5 * iqr
+upper_bound <- q3 + 1.5 * iqr
+
+# Detect outliers
+outliers <- rawdata$vict_age[rawdata$vict_age < lower_bound | rawdata$vict_age > upper_bound]
+
+# Print outliers
+print(outliers)
+```
+```{r}
+#replacing 0 age with mode age
+# Function to calculate the mode
+get_mode <- function(x) {
+  x <- x[!is.na(x) & x != 0]  # Remove NAs and 0s
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Calculate mode of vict_age
+mode_age <- get_mode(rawdata$vict_age)
+
+# Replace 0 with mode
+rawdata$vict_age[rawdata$vict_age == 0] <- mode_age
+```
+```{r}
+#Saving cleaned file 
+write.csv(rawdata, file = "C:\\Users\\abhanage\\OneDrive - Stony Brook University\\2_Spring 2025 Sem 2\\AMS 597- Statistical Computing\\Project\\CrimeTrendData\\final_data.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+***EDA***
+
+---
+title: "Crime Trend Dataset EDA file"
+author: "Aishwarya Bhanage"
+date: "2025-04-11"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+
+# Load necessary libraries
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(ggthemes)
+library(ggmap)
+library(scales)
+library(gridExtra)
+library(ggpubr)
+library(dplyr)
+library(corrplot)
+library(zoo)  # For rolling average
+
+# Install any missing packages
+packages <- c("tidyverse", "lubridate", "ggplot2", "scales", "viridis", "corrplot", "ggthemes", "ggpubr", "gridExtra", "zoo")
+lapply(packages, function(pkg) if (!require(pkg, character.only = TRUE)) install.packages(pkg))
+lapply(packages, library, character.only = TRUE)
+
+# Read the cleaned data
+data <- read.csv("C:\\Users\\abhanage\\OneDrive - Stony Brook University\\2_Spring 2025 Sem 2\\AMS 597- Statistical Computing\\Project\\CrimeTrendData\\final_data.csv", stringsAsFactors = FALSE)
+
+head(data)
+# Load libraries
+library(tidyverse)
+library(lubridate)
+
+# Read your dataset
+data <- read.csv("C:\\Users\\abhanage\\OneDrive - Stony Brook University\\2_Spring 2025 Sem 2\\AMS 597- Statistical Computing\\Project\\CrimeTrendData\\final_data.csv", stringsAsFactors = FALSE)
+
+# as.Date() 
+data$date_rptd <- as.Date(data$date_rptd)
+data$date_occ <- as.Date(data$date_occ)
+
+# Convert time_occ to 4-digit string format 
+data$time_occ <- sprintf("%04d", as.numeric(data$time_occ))
+
+# Extract hour and minute from time
+data$hour <- substr(data$time_occ, 1, 2)
+data$minute <- substr(data$time_occ, 3, 4)
+
+# Combine date and time into datetime format
+data$datetime_occ <- as.POSIXct(paste(data$date_occ, paste(data$hour, data$minute, "00", sep=":")),
+                                 format="%Y-%m-%d %H:%M:%S")
+
+# Extract Year-Month for trend plots
+data$Year_Month <- format(data$datetime_occ, "%Y-%m")
+
+# Add time-based features
+data <- data %>%
+  mutate(
+    Hour = as.numeric(lubridate::hour(datetime_occ)),
+    Year = as.factor(lubridate::year(date_occ)),
+    Month = lubridate::month(date_occ, label = TRUE),
+    DayOfWeek = lubridate::wday(date_occ, label = TRUE),
+    Season = factor(case_when(
+      Month %in% c("Dec", "Jan", "Feb") ~ "Winter",
+      Month %in% c("Mar", "Apr", "May") ~ "Spring",
+      Month %in% c("Jun", "Jul", "Aug") ~ "Summer",
+      TRUE ~ "Fall"
+    ), levels = c("Winter", "Spring", "Summer", "Fall"))
+  )
+
+
+```
+
+
+```{r}
+
+# --- Visualizations ---
+
+# 1. Monthly Crime Trend (Fixed)
+monthly_trend <- data %>%
+  filter(!is.na(Year_Month)) %>%
+  group_by(Year_Month) %>%
+  summarise(Total_Crimes = n(), .groups = 'drop') %>%
+  mutate(Date = as.Date(paste0(Year_Month, "-01"), format = "%Y-%m-%d"))
+ggplot(monthly_trend, aes(x = Date, y = Total_Crimes)) +
+  geom_line(color = "steelblue") +
+  labs(title = "Monthly Crime Trend", x = "Date", y = "Number of Crimes") +
+  theme_minimal()
+
+
+```
+
+```{r}
+
+# 2. Top 10 Crime-Prone Areas
+top_areas <- data %>%
+  count(area_name, sort = TRUE) %>%
+  top_n(10)
+ggplot(top_areas, aes(x = reorder(area_name, n), y = n, fill = area_name)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Top 10 Crime-Prone Areas", x = "Area", y = "Crime Count") +
+  theme_minimal()
+
+```
+
+```{r}
+
+# 3. Top 10 Crime Types
+top_crimes <- data %>%
+  count(crm_cd_desc, sort = TRUE) %>%
+  top_n(10)
+ggplot(top_crimes, aes(x = reorder(crm_cd_desc, n), y = n)) +
+  geom_bar(stat = "identity", fill = "darkred") +
+  coord_flip() +
+  labs(title = "Top 10 Crime Types", x = "Crime Description", y = "Frequency") +
+  theme_minimal()
+
+```
+
+```{r}
+# 4. Pie chart for part 1 and 2 crime
+
+part_counts <- table(data$part_1_2)  # This gives the count of 1s and 2s
+
+# Create labels with percentages
+labels <- paste0(names(part_counts), ": ", round(100 * part_counts / sum(part_counts), 1), "%")
+
+# Create pie chart
+pie(part_counts, labels = labels, col = c("skyblue", "salmon"),
+    main = "Distribution of Part 1 and 2 Crimes")
+
+```
+
+```{r}
+
+# 5. Victim Sex Distribution
+ggplot(data, aes(x = vict_sex)) +
+  geom_bar(fill = "purple") +
+  labs(title = "Victim Sex Distribution", x = "Sex", y = "Count") +
+  theme_minimal()
+
+```
+
+```{r}
+
+# 6. Victim Descent
+victim_descent <- data %>%
+  count(vict_descent, sort = TRUE)
+ggplot(victim_descent, aes(x = reorder(vict_descent, n), y = n)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  coord_flip() +
+  labs(title = "Victim Descent", x = "Descent Code", y = "Count") +
+  theme_minimal()
+
+```
+
+```{r}
+# 7. Victim Age Distribution
+ggplot(data, aes(x = vict_age)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white") +
+  labs(title = "Distribution of Victim Age", x = "Age", y = "Count") +
+  theme_minimal()
+
+
+```
+
+
+```{r}
+
+# 8. Crime Report Status
+ggplot(data, aes(x = status_desc)) +
+  geom_bar(fill = "coral") +
+  coord_flip() +
+  labs(title = "Status of Crime Reports", x = "Status Description", y = "Count") +
+  theme_minimal()
+
+```
+
+```{r}
+
+# 9. Average Daily Crimes Per Month
+library(lubridate)
+
+df_2_adjusted <- data %>%
+  filter(!is.na(Year_Month) & grepl("^\\d{4}-\\d{2}$", Year_Month)) %>%
+  group_by(Year_Month) %>%
+  summarise(Crime = n(), .groups = "drop") %>%
+  mutate(
+    Date = ymd(paste0(Year_Month, "-01")),
+    days_in_month = days_in_month(Date),
+    Crime = round(Crime / days_in_month),
+    Year = as.factor(year(Date)),
+    Month = lubridate::month(Date, label = TRUE)
+  ) %>%
+  select(Date, Year, Month, Crime) %>%
+  arrange(Date)
+
+ggplot(df_2_adjusted, aes(x = Date, y = Crime)) +
+  geom_line(color = "steelblue") +
+  labs(title = "Average Daily Crimes Per Month", x = "Date", y = "Number of Crimes") +
+  theme_minimal()
+
+
+```
+
+```{r}
+
+# 10. Scatter Plot with Trend Line
+ggplot(df_2_adjusted, aes(x = Date, y = Crime)) +
+  geom_point(color = "darkgreen", alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red") +
+  labs(title = "Crime Trends with Smoothing", x = "Date", y = "Number of Crimes (Adjusted)") +
+  theme_minimal()
+
+```
+
+```{r}
+# 11. Bar Plot by Year 
+crime_by_year <- df_2_adjusted %>%
+  group_by(Year) %>%
+  summarise(Total_Crime = sum(Crime))
+ggplot(crime_by_year, aes(x = Year, y = Total_Crime, fill = Year)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Total Crimes by Year", x = "Year", y = "Total Crimes (Adjusted)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+
+```{r}
+# 12. Bar Plot by Month (Sample Data)
+crime_by_month <- df_2_adjusted %>%
+  group_by(Month) %>%
+  summarise(Avg_Crime = mean(Crime))
+ggplot(crime_by_month, aes(x = Month, y = Avg_Crime, fill = Month)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Average Crimes by Month", x = "Month", y = "Average Crimes (Adjusted)") +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r}
+# 13. Box Plot by Year (Sample Data)
+ggplot(df_2_adjusted, aes(x = Year, y = Crime, fill = Year)) +
+  geom_boxplot() +
+  labs(title = "Crime Distribution by Year", x = "Year", y = "Number of Crimes (Adjusted)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+```{r}
+# 14. Heatmap: Crimes by Year and Month (Sample Data)
+# Normalize total crime per year to get percentages
+crime_heatmap_percent <- df_2_adjusted %>%
+  group_by(Year, Month) %>%
+  summarise(Total_Crime = sum(Crime), .groups = "drop") %>%
+  mutate(
+    Month = factor(Month, levels = month.abb)  # Order months
+  ) %>%
+  group_by(Year) %>%
+  mutate(
+    Yearly_Total = sum(Total_Crime),
+    Percent = round((Total_Crime / Yearly_Total) * 100, 1)
+  ) %>%
+  ungroup()
+
+# Plot with annotations
+ggplot(crime_heatmap_percent, aes(x = Month, y = Year, fill = Total_Crime)) +
+  geom_tile(color = "gray90") +
+  geom_text(aes(label = paste0(Percent, "%")), size = 3) +
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(
+    title = "Heatmap of Crimes by Year and Month",
+    x = "Month", y = "Year", fill = "Total Crime"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r}
+
+# 15. Crime Trends by Year, Faceted by Month (Sample Data)
+ggplot(df_2_adjusted, aes(x = Date, y = Crime)) +
+  geom_line(color = "purple") +
+  geom_point(color = "purple") +
+  facet_wrap(~ Month, scales = "free_x") +
+  labs(title = "Crime Trends by Month", x = "Date", y = "Number of Crimes (Adjusted)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r}
+
+# 16. Crime by Hour of Day
+crime_by_hour <- data %>%
+  group_by(hour) %>%
+  summarise(Total_Crimes = n())
+ggplot(crime_by_hour, aes(x = hour, y = Total_Crimes)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  labs(title = "Crimes by Hour of Day", x = "Hour", y = "Number of Crimes") +
+  theme_minimal()
+
+```
+
+```{r}
+
+# 17. Crime by Day of the Week
+crime_by_day <- data %>%
+  group_by(DayOfWeek) %>%
+  summarise(Total_Crimes = n())
+ggplot(crime_by_day, aes(x = DayOfWeek, y = Total_Crimes, fill = DayOfWeek)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Crimes by Day of the Week", x = "Day of Week", y = "Number of Crimes") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+```
+
+```{r}
+# 18. Box Plot: Victim Age by Victim Sex
+ggplot(data, aes(x = vict_sex, y = vict_age, fill = vict_sex)) +
+  geom_boxplot() +
+  labs(title = "Victim Age Distribution by Sex", x = "Sex", y = "Age") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+
+```{r}
+
+# 19. Violin Plot: Victim Age by Season
+ggplot(data, aes(x = Season, y = vict_age, fill = Season)) +
+  geom_violin() +
+  labs(title = "Victim Age Distribution by Season", x = "Season", y = "Age") +
+  theme_minimal() +
+  theme(legend.position = "none")
+ggsave("violin_age_by_season.png", width = 8, height = 6)
+
+```
+
+
+```{r}
+# 20. Correlation Heatmap: Numerical Variables
+numerical_data <- data %>%
+  select_if(is.numeric)
+cor_matrix <- cor(numerical_data, use = "complete.obs", method = "pearson")
+corrplot(cor_matrix, method = "color", type = "upper", tl.cex = 0.8, title = "Correlation Heatmap of Numerical Variables", mar = c(0, 0, 1, 0))
+
+```
+
+
+
+
+
+
+***Research Question 1***
+```{r}
+# Load libraries
+library(tidyverse)
+library(lubridate)
+library(caret)
+library(randomForest)
+library(xgboost)
+library(gbm)
+library(Metrics)
+library(glmnet)
+library(e1071)
+
+# Read dataset
+data <- read.csv("C:\\Users\\abhanage\\OneDrive - Stony Brook University\\2_Spring 2025 Sem 2\\AMS 597- Statistical Computing\\Project\\CrimeTrendData\\final_data.csv")
+
+# Step 1: Prepare crime counts
+crime_summary <- data %>%
+  group_by(area_name, crm_cd_desc) %>%
+  summarise(crime_count = n(), .groups = "drop")
+
+ml_data <- crime_summary %>%
+  mutate(area_name = as.factor(area_name), crm_cd_desc = as.factor(crm_cd_desc))
+
+ml_data_dummy <- dummyVars(crime_count ~ ., data = ml_data)
+ml_data_encoded <- data.frame(predict(ml_data_dummy, newdata = ml_data))
+ml_data_encoded$crime_count <- ml_data$crime_count
+
+# Step 2: Train/test split
+set.seed(123)
+train_index <- createDataPartition(ml_data_encoded$crime_count, p = 0.8, list = FALSE)
+train_data <- ml_data_encoded[train_index, ]
+test_data <- ml_data_encoded[-train_index, ]
+
+pre_proc <- preProcess(train_data, method = c("center", "scale"))
+train_data <- predict(pre_proc, train_data)
+test_data <- predict(pre_proc, test_data)
+
+X_train <- as.matrix(train_data[, -ncol(train_data)])
+y_train <- train_data$crime_count
+X_test <- as.matrix(test_data[, -ncol(test_data)])
+y_test <- test_data$crime_count
+
+# Step 3: Model Training
+results <- data.frame(Model = character(), R2 = numeric(), RMSE = numeric(), stringsAsFactors = FALSE)
+# 1. Linear Regression
+lm_model <- lm(crime_count ~ ., data = train_data)
+lm_preds <- predict(lm_model, newdata = test_data)
+results <- rbind(results, data.frame(Model = "Linear Regression", R2 = R2(y_test, lm_preds), RMSE = rmse(y_test, lm_preds)))
+
+# 2. Random Forest
+rf_model <- randomForest(crime_count ~ ., data = train_data, ntree = 100)
+rf_preds <- predict(rf_model, newdata = test_data)
+results <- rbind(results, data.frame(Model = "Random Forest", R2 = R2(y_test, rf_preds), RMSE = rmse(y_test, rf_preds)))
+
+# 3. XGBoost
+train_matrix <- xgb.DMatrix(data = X_train, label = y_train)
+test_matrix <- xgb.DMatrix(data = X_test, label = y_test)
+xgb_model <- xgboost(data = train_matrix, nrounds = 100, objective = "reg:squarederror", verbose = 0)
+xgb_preds <- predict(xgb_model, newdata = test_matrix)
+results <- rbind(results, data.frame(Model = "XGBoost", R2 = R2(y_test, rf_preds), RMSE = rmse(y_test, rf_preds)))
+
+# 7. Ridge Regression
+ridge_model <- cv.glmnet(X_train, y_train, alpha = 0)
+ridge_preds <- predict(ridge_model, s = "lambda.min", newx = X_test)
+results <- rbind(results, data.frame(Model = "Ridge Model", R2 = R2(y_test, rf_preds), RMSE = rmse(y_test, rf_preds)))
+
+# Step 4: Evaluate all models
+evaluate_model <- function(name, preds, actual) {
+  cat(sprintf("📊 %s Performance:\n", name))
+  cat(sprintf("MAE : %.2f\n", mae(actual, preds)))
+  cat(sprintf("RMSE: %.2f\n", rmse(actual, preds)))
+  cat(sprintf("R²   : %.3f\n\n", R2(preds, actual)))
+}
+
+
+evaluate_model("Linear Regression", lm_preds, y_test)
+evaluate_model("Random Forest", rf_preds, y_test)
+evaluate_model("XGBoost", xgb_preds, y_test)
+#evaluate_model("Gradient Boosting", gbm_preds, y_test)
+#evaluate_model("SVR", svr_preds, y_test)
+#evaluate_model("Elastic Net", enet_preds, y_test)
+evaluate_model("Ridge Regression", ridge_preds, y_test)
+
+# Step 5: Ensemble (Stacking)
+rf_train_preds <- predict(rf_model, newdata = train_data)
+xgb_train_preds <- predict(xgb_model, newdata = train_matrix)
+rf_test_preds <- predict(rf_model, newdata = test_data)
+xgb_test_preds <- predict(xgb_model, newdata = test_matrix)
+
+stack_train <- data.frame(rf = rf_train_preds, xgb = xgb_train_preds, actual = train_data$crime_count)
+stack_test <- data.frame(rf = rf_test_preds, xgb = xgb_test_preds, actual = test_data$crime_count)
+
+meta_model <- lm(actual ~ rf + xgb, data = stack_train)
+stack_preds <- predict(meta_model, newdata = stack_test)
+avg_preds <- (rf_test_preds + xgb_test_preds) / 2
+
+evaluate_model("Stacked Ensemble", stack_preds, stack_test$actual)
+evaluate_model("Average Model", avg_preds, stack_test$actual)
+
+results <- rbind(results, data.frame(Model = "Stacked Ensemble", R2 = R2(y_test, stack_preds), RMSE = rmse(y_test, stack_preds)))
+
+results <- rbind(results, data.frame(Model = "Average Model", R2 = R2(y_test, avg_preds), RMSE = rmse(y_test, avg_preds)))
+
+print(results[order(-results$R2), ])
+```
+
+Interpretation:
+The Stacked Ensemble model turned out to be the best performer, achieving the highest R² value of 0.71, which means it was able to explain about 71% of the variation in crime counts. This makes it slightly better than any individual model like Random Forest or XGBoost. The reason it likely performed so well is because it combines predictions from multiple strong models, which helps balance out their individual weaknesses and results in more reliable predictions overall. With a low RMSE too, it’s both accurate and consistent—making it a solid choice for this kind of crime trend prediction.
+
+***Research Question 2***
+
+```{r}
+
+
+
+
+# Load your dataset (replace with actual path or upload manually in RStudio)
+crime_data <- read.csv("C:\\Users\\abhanage\\OneDrive - Stony Brook University\\2_Spring 2025 Sem 2\\AMS 597- Statistical Computing\\Project\\CrimeTrendData\\final_data.csv")
+
+# Check the structure
+str(crime_data)
+
+# View first few rows
+head(crime_data)
+
+colnames(crime_data)
+
+# Remove rows with missing values in key columns
+crime_data <- crime_data %>%
+  filter(!is.na(area_name), !is.na(crm_cd_desc))
+
+#Clean up crime type strings
+crime_data$crm_cd_desc <- toupper(trimws(crime_data$crm_cd_desc))
+
+#'area_name' and 'crm_cd_desc' (crime descriptions) are trimmed and converted to consistent formats.
+# Only records with non-missing 'area_name' and crime type are retained.
+# This ensures valid grouping when aggregating data later.
+
+
+# Create cleaned versions of area name and crime type
+crime_data <- crime_data %>%
+  mutate(
+    area_name = tolower(trimws(area_name)),     # Clean area names
+    crime_type = trimws(crm_cd_desc)            # Clean crime descriptions
+  )
+
+# AGGREGATE CRIME DATA BY AREA AND TYPE
+# Grouping by AREA_NAME and Crime Description
+crime_by_area <- crime_data %>%
+  group_by(area_name, crm_cd_desc) %>%
+  summarise(crime_count = n()) %>%
+  ungroup()
+
+#The data is grouped by area_name and crime_type (crm_cd_desc), and the count of each type per area is calculated (i.e., frequency matrix). This matrix captures the crime profile of each area.
+
+
+# Pivot to wide format: A wide-format matrix is created where:
+# - Rows = areas (e.g., "mission", "hollywood")
+# - Columns = specific crimes (e.g., "ROBBERY", "ARSON")
+# - Values = number of times each crime occurred in that area
+
+crime_matrix <- pivot_wider(crime_by_area, names_from = crm_cd_desc, values_from = crime_count, values_fill = 0)
+
+# Save area names separately for later
+area_names <- crime_matrix$area_name
+crime_matrix_numeric <- crime_matrix %>% select(-area_name)
+
+# Normalize
+crime_scaled <- scale(crime_matrix_numeric)
+
+# Choose optimal k
+fviz_nbclust(crime_scaled, kmeans, method = "wss") + ggtitle("Optimal Number of Clusters (WSS Method)")
+
+# Example: Let's say we visually found k = 3
+optimal_k <- 3
+cat("Optimal number of clusters based on WSS method: ", optimal_k, "\n")
+
+#The WSS plot shows a clear elbow around k = 3, suggesting three distinct groups (clusters) of areas based on crime patterns.
+
+# Let's say k = 3 based on the elbow plot
+set.seed(123)
+kmeans_result <- kmeans(crime_scaled, centers = 3)
+
+# Append cluster info back
+crime_clusters <- tibble(
+  area_name = area_names,
+  cluster = kmeans_result$cluster
+)
+
+# Join original data for analysis
+clustered_data <- crime_clusters %>%
+  left_join(crime_matrix, by = "area_name")
+
+# Calculate mean of crimes per cluster
+cluster_means <- clustered_data %>%
+  group_by(cluster) %>%
+  summarise(across(where(is.numeric), mean))
+
+# View this table to decide meaning of each cluster
+print(cluster_means)
+
+# Assign readable labels
+crime_clusters <- crime_clusters %>%
+  mutate(cluster_label = case_when(
+    cluster == 1 ~ " Low-Crime Residential Areas",
+    cluster == 2 ~ " Violent Crime Zones",
+    cluster == 3 ~ " High-Theft Commercial Areas"
+  ))
+#cluster_means` table shows clear patterns: For example, Cluster 2 has high values for aggravated assault and robbery, while Cluster 3 has higher values for property crimes like grand theft and burglary.
+
+# Add the ggrepel library
+library(ggrepel)
+
+# Create PCA data with labels: PCA is used to reduce dimensionality of the scaled data for visualization. The first two principal components (PC1 and PC2) represent the axes of maximum variance across areas.
+
+# Run PCA
+pca <- prcomp(crime_scaled, center = TRUE, scale. = TRUE)
+
+pca_data <- as.data.frame(pca$x[,1:2])
+pca_data$label <- crime_clusters$cluster_label
+pca_data$area_name <- crime_clusters$area_name
+
+# Plot with labels
+ggplot(pca_data, aes(PC1, PC2, color = label, label = area_name)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_text_repel(size = 3.2, max.overlaps = 50) +  # avoid cluttered labels
+  theme_minimal() +
+  labs(
+    title = "Crime Pattern Clusters by Area",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Cluster"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+
+```
+
+Interpretation : 
+PCA Cluster Plot
+Each point represents a police area.
+Color denotes cluster label (assigned from k-means).
+Labels show area names.
+Areas close together have similar crime-type profiles. For example, “central” and “pacific” are high on PC2, indicating high-intensity and varied crime patterns.
+“77th Street” appears as a low-crime outlier (green), but this may be misleading due to scaling — the pattern of crimes may appear typical despite high volume, which scaling obscures.
+
+
+```{r}
+# Install if not already installed
+# install.packages("leaflet")
+library(leaflet)
+library(dplyr)
+
+# area_cluster_geo from raw data + cluster assignments
+
+# Extract average lat/lon per area_name from original data
+area_coords <- crime_data %>%
+  group_by(area_name) %>%
+  summarise(lat = mean(lat, na.rm = TRUE),
+            lon = mean(lon, na.rm = TRUE))
+
+#Use your clustered labels (from crime_clusters)
+# Make sure `crime_clusters` has `area_name` and `cluster_label`
+area_cluster_geo <- crime_clusters %>%
+  left_join(area_coords, by = "area_name")
+
+
+# Set high-contrast dark colors for clusters
+area_cluster_geo <- area_cluster_geo %>%
+  mutate(cluster_color = case_when(
+    cluster_label == " Low-Crime Residential Areas" ~ "#00FF7F",  # Neon Green
+    cluster_label == " Violent Crime Zones" ~ "#1E90FF",         # Dodger Blue
+    cluster_label == " High-Theft Commercial Areas" ~ "#FF1493"  # Deep Pink
+  ))
+
+# Create the dark-themed map
+leaflet(area_cluster_geo) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~lon, lat = ~lat,
+    color = ~cluster_color,
+    label = ~paste0(area_name, " (", cluster_label, ")"),
+    radius = 7,
+    fillOpacity = 0.9,
+    stroke = FALSE
+  ) %>%
+  addLegend("bottomright",
+            colors = c("#00FF7F", "#1E90FF", "#FF1493"),
+            labels = c("Low-Crime Residential", "Violent Crime Zones", "High-Theft Commercial"),
+            title = "Crime Cluster Type",
+            opacity = 0.9)
+
+
+
+```
+
+Interpretation: 
+The interactive Leaflet map offers a geographic visualization of crime patterns across Los Angeles areas, segmented into three clusters: "Low-Crime Residential", "Violent Crime Zones", and "High-Theft Commercial Areas".
+
+The spatial distribution reveals that violent crimes are often concentrated in specific neighborhoods, with "Violent Crime Zones" typically located in central or historically higher-crime districts.
+
+"High-Theft Commercial Areas" appear in business or retail-dense regions, indicating that commercial hubs are more vulnerable to theft-related offenses like shoplifting and petty theft.
+
+"Low-Crime Residential" clusters are generally located in suburban or less densely populated zones, where criminal activity is comparatively minimal.
+
+This map allows for dynamic exploration and provides actionable insights for urban planners, law enforcement, and policy makers to focus crime prevention resources geographically based on cluster profiles.
+
+
+```{r}
+# Make sure you have the required packages
+
+library(pheatmap)
+library(heatmaply)
+#library(htmlwidgets)
+
+#Append cluster to crime_matrix
+crime_clustered_matrix <- bind_cols(crime_matrix_numeric, cluster = crime_clusters$cluster)
+
+# Compute average crime count per cluster
+cluster_means <- crime_clustered_matrix %>%
+  group_by(cluster) %>%
+  summarise(across(everything(), mean, .names = "mean_{.col}")) %>%
+  ungroup()
+
+# Identify top 10 crime types across all clusters
+crime_totals <- colSums(select(cluster_means, starts_with("mean_")))
+top_crimes <- names(sort(crime_totals, decreasing = TRUE))[1:10]
+
+# Extract and scale top crimes for heatmap
+cluster_matrix_top <- cluster_means %>%
+  select(all_of(top_crimes)) %>%
+  as.matrix()
+
+cluster_matrix_scaled_top <- scale(cluster_matrix_top)
+
+
+#Set readable cluster names as row names ----
+rownames(cluster_matrix_scaled_top) <- c("Low-Crime Residential", 
+                                         "Violent Crime Zones", 
+                                         "High-Theft Commercial")
+
+# Function to abbreviate crime types
+abbreviate_crime_label <- function(label) {
+  label %>%
+    gsub("THEFT PLAIN - PETTY.*", "THEFT_PLAIN", ., ignore.case = TRUE) %>%
+    gsub("BURGLARY FROM VEHICLE", "BURGLARY_VEHICLE", ., ignore.case = TRUE) %>%
+    gsub("BURGLARY", "BURGLARY", ., ignore.case = TRUE) %>%
+    gsub("THEFT OF IDENTITY", "ID_THEFT", ., ignore.case = TRUE) %>%
+    gsub("BATTERY.*ASSAULT", "BATTERY ASSAULT", ., ignore.case = TRUE) %>%
+    gsub("INTIMATE PARTNER.*ASSAULT", "PARTNER_ASSAULT", ., ignore.case = TRUE) %>%
+    gsub("ASSAULT WITH DEADLY WEAPON.*", "ADW_ASSAULT", ., ignore.case = TRUE) %>%
+    gsub("VANDALISM.*", "VANDALISM", ., ignore.case = TRUE) %>%
+    gsub("VEHICLE - STOLEN", "STOLEN_VEH", ., ignore.case = TRUE) %>%
+    gsub("THEFT FROM MOTOR VEHICLE.*PETTY.*", "PETTY_THEFT_VEHICLE", ., ignore.case = TRUE)
+}
+
+# Clean and abbreviate together
+colnames(cluster_matrix_scaled_top) <- sapply(
+  gsub("^mean_", "", colnames(cluster_matrix_scaled_top)),
+  abbreviate_crime_label
+)
+
+
+# STATIC HEATMAP (using pheatmap) ----
+pheatmap(cluster_matrix_scaled_top,
+         cluster_rows = FALSE,
+         cluster_cols = TRUE,
+         main = "Top 10 Crime Types by Cluster",
+         fontsize_row = 10,
+         fontsize_col = 8,
+         angle_col = 90,
+         border_color = "grey80",
+         color = colorRampPalette(c("white", "orange", "red"))(100),
+         display_numbers = TRUE,           # Show scaled values in cells
+         number_format = "%.1f", 
+         treeheight_row = 0,
+         legend = TRUE,
+         cellwidth = 30,
+         cellheight = 40,
+         labels_row = c("Low-Crime Residential", 
+                        "Violent Crime Zones", 
+                        "High-Theft Commercial"))
+
+#INTERACTIVE HEATMAP (using heatmaply) ----
+heatmaply(
+  cluster_matrix_scaled_top,
+  xlab = "Top Crime Types",
+  ylab = "Crime Clusters",
+  main = "Top 10 Crime Types by Cluster (Interactive)",
+  dendrogram = "column",
+  colors = colorRampPalette(c("white", "orange", "red"))(256),
+  fontsize_row = 10,
+  fontsize_col = 8,
+  margins = c(60, 160),    # Space for long labels
+  grid_gap = 1             # Adds spacing between cells
+)
+
+
+```
+
+Interpretation: 
+The heatmap provides a clear visual comparison of the top 10 most variable crime types across the three identified clusters. 
+
+"Violent Crime Zones" are characterized by significantly higher levels of violent offenses such as robbery, aggravated assault, and assault with deadly weapons, as indicated by the deep red color and high standardized scores in those columns.
+
+On the other hand, "High-Theft Commercial Areas" show elevated activity in theft-related crimes like shoplifting, petty theft, and burglary, suggesting these clusters are commercial hubs prone to property crimes.
+
+The "Low-Crime Residential" cluster maintains low standardized values across most crime types, reinforcing the idea that these areas experience fewer serious or high-volume crimes.
+
+This clustering effectively distinguishes between areas primarily affected by violence, property theft, or relatively low crime,helping stakeholders target crime prevention strategies accordingly.
+
+```{r}
+#Cluster by crime type cluster 2
+
+# Identify most frequent crime type per area
+top_crime_per_area <- crime_data %>%
+  group_by(area_name, crm_cd_desc) %>%
+  summarise(count = n()) %>%
+  slice_max(order_by = count, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Merge with PCA data
+pca_data_crime <- pca_data %>%
+  left_join(top_crime_per_area, by = "area_name")
+
+# Plot: Color-coded by top crime type
+ggplot(pca_data_crime, aes(PC1, PC2, color = crm_cd_desc, label = area_name)) +
+  geom_point(size = 3, alpha = 0.9) +
+  geom_text_repel(size = 2.8, max.overlaps = 50) +
+  theme_minimal() +
+  labs(
+    title = "Top Crime Type by Area",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Most Frequent Crime"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+
+```
+Interpretation:  This plot projects each police area into a 2D PCA space based on crime-type patterns.
+Each point represents an area, with colors indicating the single most frequently occurring crime type in that area. Labels show the corresponding area names.
+
+The PCA axes (PC1 and PC2) capture the primary dimensions of variance in the dataset, so areas located close together share similar overall crime distributions.
+"BURGLARY FROM VEHICLE" (in red) dominates in areas like Central and Hollywood, which likely experience high property crime related to vehicles.
+"VEHICLE - STOLEN" (in blue) is the most frequent crime in the majority of areas, showing how widespread auto theft is across districts.
+A few zones like Topanga, Devonshire, and Van Nuys show "THEFT OF IDENTITY" (green) as the top offense, which may point to more digital/financial crime issues in residential or less densely policed areas.
+This plot is useful for identifying which crime is most problematic in each area, and also understanding how these dominant crime types align with the broader structure of area-wise crime pattern similarities.
+
+```{r}
+#Interactive plot 
+# Load necessary libraries
+library(leaflet)
+library(dplyr)
+library(htmltools)
+library(tools)
+
+#Get most frequent crime type per area
+top_crime_by_area <- crime_data %>%
+  group_by(area_name, crm_cd_desc) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>%
+  group_by(area_name) %>%
+  slice(1)
+
+# Total crimes per area
+total_crimes <- crime_data %>%
+  group_by(area_name) %>%
+  summarise(total_crimes = n(), .groups = "drop")
+
+# Area coordinates
+area_coords <- crime_data %>%
+  group_by(area_name) %>%
+  summarise(lat = mean(lat, na.rm = TRUE),
+            lon = mean(lon, na.rm = TRUE), .groups = "drop")
+
+# Combine with cluster labels
+leaflet_data <- crime_clusters %>%
+  left_join(top_crime_by_area, by = "area_name") %>%
+  left_join(total_crimes, by = "area_name") %>%
+  left_join(area_coords, by = "area_name") %>%
+  filter(!is.na(lat), !is.na(lon))  # filter valid points only
+
+# Define a new vibrant color palette for top crime type
+crime_palette <- colorFactor(
+  palette = "Dark2",
+  domain = leaflet_data$crm_cd_desc
+)
+
+# Create Leaflet Map
+leaflet(leaflet_data) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%  # Light map style
+  setView(lng = -118.25, lat = 34.05, zoom = 10) %>%
+  addCircleMarkers(
+    lng = ~lon, lat = ~lat,
+    color = ~crime_palette(crm_cd_desc),
+    radius = 8,
+    stroke = TRUE,
+    fillOpacity = 0.9,
+    popup = ~paste0(
+      "<b>Area:</b> ", toTitleCase(area_name), "<br>",
+      "<b>Top Crime:</b> ", crm_cd_desc, "<br>",
+      "<b>Total Crimes:</b> ", total_crimes, "<br>",
+      "<b>Cluster:</b> ", cluster_label
+    ),
+    label = ~paste("Area:", toTitleCase(area_name))
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = crime_palette,
+    values = ~crm_cd_desc,
+    title = "Most Frequent Crime Type",
+    opacity = 0.95
+  )
+
+```
+Interpretation : 
+This interactive map displays the most frequently reported crime types across different areas of Los Angeles, using color-coded markers based on the top crime in each location. Each marker is placed according to geographic coordinates and provides detailed information—such as the area name, top crime type, total number of reported crimes, and its assigned crime pattern cluster—when clicked. The map is centered on Los Angeles with a clean, light background for better visibility. It highlights how specific crimes like vehicle theft or identity theft tend to concentrate in certain regions, offering valuable insight for law enforcement and policy makers to tailor area-specific crime prevention strategies.
+
+
+
+
+***Research Question 3***
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load dataset
+crime_data <- read.csv("C:\\Users\\abhanage\\OneDrive - Stony Brook University\\2_Spring 2025 Sem 2\\AMS 597- Statistical Computing\\Project\\CrimeTrendData\\final_data.csv")
+colnames(crime_data) <- make.names(colnames(crime_data))
+crime_data$crm_cd_desc <- toupper(crime_data$crm_cd_desc)
+
+# Define violent keywords
+violent_keywords <- c("HOMICIDE", "ASSAULT", "ROBBERY", "KIDNAPPING", "RAPE", 
+                      "BATTERY", "CRIMINAL THREATS", "ARSON", "SHOTS FIRED", 
+                      "ORAL COPULATION", "SEXUAL", "SODOMY", "STALKING",
+                      "CHILD ABUSE", "CHILD STEALING", "BRANDISH WEAPON")
+
+# Create binary label
+crime_data$crime_category <- ifelse(
+  grepl(paste(violent_keywords, collapse = "|"), crime_data$crm_cd_desc),
+  "Violent", "Non-Violent"
+)
+crime_data$crime_category <- factor(crime_data$crime_category, levels = c("Non-Violent", "Violent"))
+
+# Feature engineering
+crime_data$hour <- floor(crime_data$time_occ / 100)
+crime_data$hour <- ifelse(crime_data$hour >= 24, NA, crime_data$hour)
+crime_data$time_of_day <- cut(crime_data$hour,
+                              breaks = c(-1, 6, 12, 18, 24),
+                              labels = c("Night", "Morning", "Afternoon", "Evening"))
+crime_data$day_of_week <- weekdays(as.Date(crime_data$date_occ))
+
+# Filter top premises and areas
+top_premises <- names(sort(table(crime_data$premis_desc), decreasing = TRUE)[1:20])
+top_areas <- names(sort(table(crime_data$area_name), decreasing = TRUE)[1:10])
+crime_data <- crime_data %>%
+  filter(premis_desc %in% top_premises, area_name %in% top_areas)
+
+# Final feature set
+model_data <- crime_data %>%
+  select(crime_category, premis_desc, area_name, time_of_day,
+         hour, day_of_week, vict_sex, vict_descent) %>%
+  na.omit() %>%
+  mutate(across(where(is.character), as.factor))
+
+# Separate predictors and labels
+X_data <- model_data %>% select(-crime_category)
+y_data <- model_data$crime_category
+
+# Dummy encoding
+dummies <- dummyVars(~ ., data = X_data)
+X_encoded <- predict(dummies, newdata = X_data) %>% as.data.frame()
+nzv <- nearZeroVar(X_encoded)
+X_encoded <- X_encoded[, -nzv]
+
+# Train-test split
+set.seed(123)
+train_index <- createDataPartition(y_data, p = 0.8, list = FALSE)
+train_X <- X_encoded[train_index, ]
+train_y <- y_data[train_index]
+test_X  <- X_encoded[-train_index, ]
+test_y  <- y_data[-train_index]
+
+# ----------------------------
+# Logistic Regression
+log_model <- glm(train_y ~ ., data = cbind(train_y, train_X), family = "binomial")
+log_model <- step(log_model, direction = "both", trace = FALSE)
+log_probs <- predict(log_model, newdata = test_X, type = "response")
+log_preds <- ifelse(log_probs > 0.5, "Violent", "Non-Violent") %>% factor(levels = c("Non-Violent", "Violent"))
+cm_log <- confusionMatrix(log_preds, test_y)
+roc_log <- roc(test_y, log_probs)
+
+# ----------------------------
+# Decision Tree
+tree_model <- rpart(train_y ~ ., data = cbind(train_y, train_X), method = "class")
+tree_preds <- predict(tree_model, newdata = test_X, type = "class")
+tree_probs <- predict(tree_model, newdata = test_X, type = "prob")[, "Violent"]
+cm_tree <- confusionMatrix(tree_preds, test_y)
+roc_tree <- roc(test_y, tree_probs)
+
+# ----------------------------
+# Random Forest
+rf_model <- randomForest(crime_category ~ ., data = model_data[train_index, ], ntree = 200)
+rf_preds <- predict(rf_model, newdata = model_data[-train_index, ])
+rf_probs <- predict(rf_model, newdata = model_data[-train_index, ], type = "prob")[, "Violent"]
+cm_rf <- confusionMatrix(rf_preds, y_data[-train_index])
+roc_rf <- roc(y_data[-train_index], rf_probs)
+
+# ----------------------------
+# XGBoost
+xgb_train <- xgb.DMatrix(data = as.matrix(train_X), label = as.numeric(train_y) - 1)
+xgb_test  <- xgb.DMatrix(data = as.matrix(test_X), label = as.numeric(test_y) - 1)
+xgb_model <- xgboost(
+  data = xgb_train,
+  objective = "binary:logistic",
+  nrounds = 300,
+  eta = 0.05,
+  max_depth = 6,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  verbose = 0
+)
+xgb_probs <- predict(xgb_model, newdata = xgb_test)
+xgb_preds <- ifelse(xgb_probs > 0.5, "Violent", "Non-Violent") %>% factor(levels = c("Non-Violent", "Violent"))
+cm_xgb <- confusionMatrix(xgb_preds, test_y)
+roc_xgb <- roc(test_y, xgb_probs)
+
+
+# ----------------------------
+# ROC Plot
+plot(roc_log, col = "blue", lwd = 2, main = "ROC Curves for Classification Models", xlim = c(1,0), ylim = c(0,1))
+plot(roc_tree, col = "green", add = TRUE, lwd = 2)
+plot(roc_rf, col = "red", add = TRUE, lwd = 2)
+plot(roc_xgb, col = "purple", add = TRUE, lwd = 2)
+legend("bottomright", legend = c("Logistic", "Decision Tree", "Random Forest", "XGBoost"),
+       col = c("blue", "green", "red", "purple"), lwd = 2)
+
+# ----------------------------
+# Visualize Decision Tree
+rpart.plot(tree_model)
+
+# ----------------------------
+# Confusion Matrix Heatmap for BEST MODEL (Logistic Regression)
+cm_df <- as.data.frame(cm_log$table)
+names(cm_df) <- c("Reference", "Prediction", "Freq")
+
+ggplot(data = cm_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), vjust = 1.5, color = "black", size = 5) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(title = "Confusion Matrix: Logistic Regression", x = "Actual", y = "Predicted") +
+  theme_minimal()
+
+# ----------------------------
+# Precision, Recall, F1 Score for all models
+calculate_metrics <- function(cm) {
+  precision <- cm$byClass["Pos Pred Value"]
+  recall <- cm$byClass["Sensitivity"]
+  f1 <- 2 * ((precision * recall) / (precision + recall))
+  return(list(Precision = precision, Recall = recall, F1 = f1))
+}
+
+metrics_log <- calculate_metrics(cm_log)
+metrics_tree <- calculate_metrics(cm_tree)
+metrics_rf <- calculate_metrics(cm_rf)
+metrics_xgb <- calculate_metrics(cm_xgb)
+
+# Print results
+cat("\n--- Classification Metrics ---\n")
+cat(sprintf("Logistic Regression:\n  Accuracy: %.4f\n  AUC: %.4f\n  Precision: %.4f\n  Recall: %.4f\n  F1 Score: %.4f\n\n",
+            cm_log$overall["Accuracy"], auc(roc_log), metrics_log$Precision, metrics_log$Recall, metrics_log$F1))
+
+cat(sprintf("Decision Tree:\n  Accuracy: %.4f\n  AUC: %.4f\n  Precision: %.4f\n  Recall: %.4f\n  F1 Score: %.4f\n\n",
+            cm_tree$overall["Accuracy"], auc(roc_tree), metrics_tree$Precision, metrics_tree$Recall, metrics_tree$F1))
+
+cat(sprintf("Random Forest:\n  Accuracy: %.4f\n  AUC: %.4f\n  Precision: %.4f\n  Recall: %.4f\n  F1 Score: %.4f\n\n",
+            cm_rf$overall["Accuracy"], auc(roc_rf), metrics_rf$Precision, metrics_rf$Recall, metrics_rf$F1))
+
+cat(sprintf("XGBoost:\n  Accuracy: %.4f\n  AUC: %.4f\n  Precision: %.4f\n  Recall: %.4f\n  F1 Score: %.4f\n",
+            cm_xgb$overall["Accuracy"], auc(roc_xgb), metrics_xgb$Precision, metrics_xgb$Recall, metrics_xgb$F1))
+
+
+```
+
+
